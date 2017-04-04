@@ -1,0 +1,18 @@
+1.数据库类型：SqlExpress2008
+2.数据库名称：SQLMODEL
+3.存放结果的表的结构
+-- Creating table '测试信息表'
+CREATE TABLE [dbo].[测试信息表] (
+    [序号] int  NOT NULL,
+    [样本序号] int  NOT NULL,
+    [项目序号] int  NOT NULL,
+    [浓度] nvarchar(max)  NULL,
+    [发光值] float  NULL,
+    [检验日期] datetime  NOT NULL,
+    [描述] nvarchar(100)  NULL,
+    [状态_Val] nvarchar(max)  NOT NULL,
+    [反应条序号] int  NOT NULL,
+    [上传状态] nvarchar(max)  NOT NULL,
+    [间隔时长] nvarchar(max)  NOT NULL,
+    [测试标识] int  NULL
+);
