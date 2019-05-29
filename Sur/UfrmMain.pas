@@ -59,8 +59,7 @@ type
     procedure UpdateConfig;{配置文件生效}
     function LoadInputPassDll:boolean;
     function MakeDBConn:boolean;
-    function DIFF_decode(const Value:string):string;
-    function GetSpecNo(const Value:string):string; //取得联机号
+    function DIFF_decode(const ASTMField:string):string;
   public
     { Public declarations }
   end;
@@ -92,6 +91,11 @@ var
   QuaContSpecNoD:string;
   EquipChar:string;
   ifRecLog:boolean;//是否记录调试日志
+  NoSpecNo:integer;
+  NoCheckDate:integer;
+  NoDtlStr:integer;
+  NoValue:integer;
+  H_DTR_RTS:boolean;
 
 //  RFM:STRING;       //返回数据
   hnd:integer;
@@ -236,6 +240,12 @@ begin
   autorun:=ini.readBool(IniSection,'开机自动运行',false);
   ifRecLog:=ini.readBool(IniSection,'调试日志',false);
 
+  NoSpecNo:=ini.ReadInteger(IniSection,'样本号位',3);//Smart3000S:2;URIT-2980:3
+  NoCheckDate:=ini.ReadInteger(IniSection,'检查日期位',7);//Smart3000S:8;URIT-2980:7
+  NoDtlStr:=ini.ReadInteger(IniSection,'联机标识位',3);//Smart3000S:4;URIT-2980:3
+  NoValue:=ini.ReadInteger(IniSection,'检查结果位',5);//Smart3000S:13;URIT-2980:5
+  H_DTR_RTS:=ini.readBool(IniSection,'DTR/RTS高电位',false);
+
   GroupName:=trim(ini.ReadString(IniSection,'工作组',''));
   EquipChar:=trim(uppercase(ini.ReadString(IniSection,'仪器字母','')));//读出来是大写就万无一失了
   SpecType:=ini.ReadString(IniSection,'默认样本类型','');
@@ -320,25 +330,25 @@ begin
     result:=passflag;
 end;
 
-function TfrmMain.GetSpecNo(const Value:string):string; //取得联机号
+function TfrmMain.DIFF_decode(const ASTMField:string):string;
 var
-  ls3:TStrings;
+  sList:TStrings;
+  ss:string;
+  i:integer;
 begin
-    ls3:=StrToList(Value,'|');
-
-    if ls3.Count<3 then begin ls3.Free;exit;end;
-
-    result:=ls3[2];
-
-    ls3.Free;
-    
-    result:='0000'+result;
-    result:=rightstr(result,4);
-end;
-
-function TfrmMain.DIFF_decode(const Value:string):string;
-begin
-  result:=stringreplace(Value,'#',' ',[rfReplaceAll,rfIgnoreCase]);
+  ss:=ASTMField;
+  
+  sList:=TStringList.Create;
+  while length(ss)>=2 do
+  begin
+    sList.Add(copy(ss,1,2));
+    delete(ss,1,2);
+  end;
+  for i :=0  to sList.Count-1 do
+  begin
+    result:=result+' '+inttostr(strtoint('$'+sList[i]));
+  end;
+  sList.Free;
   result:=trim(result);
 end;
 
@@ -360,16 +370,6 @@ begin
   end;
   Result.Add(vSourStr);
   s:=vSourStr;
-end;
-
-function TListToVariant(AList:TList):OleVariant;
-var
-  P:Pointer;
-begin
-  Result:=VarArrayCreate([0,Sizeof(TList)],varByte);
-  P:=VarArrayLock(Result);
-  Move(AList,P^,Sizeof(TList));
-  VarArrayUnLock(Result);
 end;
 
 function TfrmMain.MakeDBConn:boolean;
@@ -411,6 +411,11 @@ begin
       '数据位'+#2+'Combobox'+#2+'8'+#13+'7'+#13+'6'+#13+'5'+#2+'0'+#2+#2+#3+
       '停止位'+#2+'Combobox'+#2+'1'+#13+'1.5'+#13+'2'+#2+'0'+#2+#2+#3+
       '校验位'+#2+'Combobox'+#2+'None'+#13+'Even'+#13+'Odd'+#13+'Mark'+#13+'Space'+#2+'0'+#2+#2+#3+
+      '样本号位'+#2+'Edit'+#2+#2+'1'+#2+'OBR行用垂线分隔,从0开始,第几位'+#2+#3+
+      '检查日期位'+#2+'Edit'+#2+#2+'1'+#2+'OBR行用垂线分隔,从0开始,第几位'+#2+#3+
+      '联机标识位'+#2+'Edit'+#2+#2+'1'+#2+'OBX行用垂线分隔,从0开始,第几位'+#2+#3+
+      '检查结果位'+#2+'Edit'+#2+#2+'1'+#2+'OBX行用垂线分隔,从0开始,第几位'+#2+#3+
+      'DTR/RTS高电位'+#2+'CheckListBox'+#2+#2+'0'+#2+#2+#3+
       '工作组'+#2+'Edit'+#2+#2+'1'+#2+#2+#3+
       '仪器字母'+#2+'Edit'+#2+#2+'1'+#2+#2+#3+
       '检验系统窗体标题'+#2+'Edit'+#2+#2+'1'+#2+#2+#3+
@@ -468,13 +473,16 @@ end;
 procedure TfrmMain.ComDataPacket1Packet(Sender: TObject;
   const Str: String);
 VAR
-  ls,ls3:TStrings;
+  ls,ls3,ls4:TStrings;
   i:integer;
+  CheckDate:string;
   SpecNo:string;
   dlttype:string;
   sValue:string;
   FInts:OleVariant;
   ReceiveItemInfo:OleVariant;
+  sHistogramTemp:STRING;
+  sHistogramString:STRING;
 begin
   if length(memo1.Lines.Text)>=60000 then memo1.Lines.Clear;//memo只能接受64K个字符
   memo1.Lines.Add(Str);
@@ -482,30 +490,66 @@ begin
   ls:=TStringList.Create;
   ExtractStrings([#$D],[],Pchar(Str),ls);//将每行导入到字符串列表中
 
+  ReceiveItemInfo:=VarArrayCreate([0,ls.Count-1],varVariant);
+
   for i :=0 to ls.Count-1 do
   begin
-    if leftstr(ls[i],4)='OBR|' then SpecNo:=GetSpecNo(ls[i]);
+    dlttype:='';
+    sValue:='';
+    sHistogramString:='';
 
-    if leftstr(ls[i],4)='OBX|' then
+    if uppercase(leftstr(ls[i],4))='OBR|' then
     begin
       ls3:=StrToList(ls[i],'|');
 
-      if ls3.Count<14 then begin ls3.Free;continue;end;
+      if ls3.Count>NoSpecNo then SpecNo:=rightstr('0000'+ls3[NoSpecNo],4);
 
-      dlttype:=ls3[4];
-      sValue:=ls3[13];
+      if ls3.Count>NoCheckDate then
+        CheckDate:=copy(ls3[NoCheckDate],1,4)+'-'+copy(ls3[NoCheckDate],5,2)+'-'+copy(ls3[NoCheckDate],7,2)+' '+copy(ls3[NoCheckDate],9,2)+ifThen(copy(ls3[NoCheckDate],9,2)<>'',':')+copy(ls3[NoCheckDate],11,2);
+      ls3.Free;
+    end;
+
+    if uppercase(leftstr(ls[i],4))='OBX|' then
+    begin
+      ls3:=StrToList(ls[i],'|');
+
+      if ls3.Count>NoDtlStr then dlttype:=ls3[NoDtlStr];
+      if ls3.Count>NoValue then sValue:=ls3[NoValue];
+
+      //Smart3000S需要做此处理。对其它仪器应该没有影响
       sValue:=stringreplace(sValue,' S','',[rfReplaceAll]);//超上限标志
       sValue:=stringreplace(sValue,' X','',[rfReplaceAll]);//超下限标志
 
+      //直方图处理 start URIT-2980
+      if (('WBCHistogram'=dlttype)or('RBCHistogram'=dlttype)or('PLTHistogram'=dlttype))and(ls3.Count>5) then
+      begin
+        sValue:='';
+        sHistogramString:='';
+        
+        //对于PLT图像内容的选取：
+        //2900P程序3.64.xxxx以后的版本
+        //3020/3000P程序4.64.xxxx以后的版本
+        //3060/3080/3081程序6.65.xxxx以后的版本
+        //2960/2980/2981程序5.65.xxxx以后的版本
+        //都只取PLT图形内容的前100个字节；在上述之前的版本，取前128个字节
+
+        ls4:=StrToList(ls3[5],'^');//ls2[5]为^Histogram^32Byte^HEX^00000000000000000.........
+        if ls4.Count>4 then
+        begin
+          sHistogramTemp:=ls4[4];
+          if 'PLTHistogram'=dlttype then sHistogramTemp:=copy(sHistogramTemp,1,200);//默认共128个字节256个字符
+          sHistogramString:=DIFF_decode(sHistogramTemp);
+        end;
+        ls4.Free;
+      end;
+      //直方图处理 stop
+
       ls3.Free;
     end;
+
+    ReceiveItemInfo[i]:=VarArrayof([dlttype,sValue,sHistogramString,'']);
   end;
   ls.Free;
-
-  if (trim(SpecNo)='')or(trim(dlttype)='') then exit;
-   
-  ReceiveItemInfo:=VarArrayCreate([0,0],varVariant);
-  ReceiveItemInfo[0]:=VarArrayof([dlttype,sValue,'','']);
 
   if bRegister then
   begin
@@ -526,9 +570,12 @@ end;
 
 procedure TfrmMain.ComPort1AfterOpen(Sender: TObject);
 begin
-  //必须为false,否则传输乱码
-  //  ComPort1.SetDTR(true);
-  //  ComPort1.SetRTS(true);
+  //Smart3000S必须为false,否则传输乱码
+  if H_DTR_RTS then
+  begin
+    ComPort1.SetDTR(true);
+    ComPort1.SetRTS(true);
+  end;
 end;
 
 initialization
